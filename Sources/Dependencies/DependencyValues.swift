@@ -1,4 +1,39 @@
 import Foundation
+import XCTestDynamicOverlay
+
+#if os(Windows)
+  import WinSDK
+#elseif os(Linux)
+  import Glibc
+#endif
+// WASI does not support dynamic linking
+#if os(WASI)
+  import XCTest
+#endif
+
+#if _runtime(_ObjC)
+  extension DispatchQueue {
+    fileprivate static func mainSync<R>(execute block: @Sendable () -> R) -> R {
+      if Thread.isMainThread {
+        return block()
+      } else {
+        return Self.main.sync(execute: block)
+      }
+    }
+  }
+
+  final class TestObserver: NSObject {}
+#elseif os(WASI)
+  final class TestObserver: NSObject, XCTestObservation {
+    private let resetCache: @convention(c) () -> Void
+    internal init(_ resetCache: @convention(c) () -> Void) {
+      self.resetCache = resetCache
+    }
+    public func testCaseWillStart(_ testCase: XCTestCase) {
+      self.resetCache()
+    }
+  }
+#endif
 
 /// A collection of dependencies that is globally available.
 ///
@@ -81,9 +116,7 @@ import Foundation
 /// Read the article <doc:RegisteringDependencies> for more information.
 public struct DependencyValues: Sendable {
   @TaskLocal public static var _current = Self()
-  #if DEBUG
-    @TaskLocal static var isSetting = false
-  #endif
+  @TaskLocal static var isSetting = false
   @TaskLocal static var currentDependency = CurrentDependency()
 
   fileprivate var cachedValues = CachedValues()
@@ -95,9 +128,64 @@ public struct DependencyValues: Sendable {
   /// provide access only to default values. Instead, you rely on the dependency values' instance
   /// that the library manages for you when you use the ``Dependency`` property wrapper.
   public init() {
-    #if canImport(XCTest)
-      _ = setUpTestObservers
+    #if _runtime(_ObjC)
+      DispatchQueue.mainSync {
+        guard
+          let XCTestObservation = objc_getProtocol("XCTestObservation"),
+          let XCTestObservationCenter = NSClassFromString("XCTestObservationCenter"),
+          let XCTestObservationCenter = XCTestObservationCenter as Any as? NSObjectProtocol,
+          let XCTestObservationCenterShared =
+            XCTestObservationCenter
+            .perform(Selector(("sharedTestObservationCenter")))?
+            .takeUnretainedValue()
+        else { return }
+        let testCaseWillStartBlock: @convention(block) (AnyObject) -> Void = { _ in
+          DependencyValues._current.cachedValues.cached = [:]
+        }
+        let testCaseWillStartImp = imp_implementationWithBlock(testCaseWillStartBlock)
+        class_addMethod(
+          TestObserver.self, Selector(("testCaseWillStart:")), testCaseWillStartImp, nil)
+        class_addProtocol(TestObserver.self, XCTestObservation)
+        _ =
+          XCTestObservationCenterShared
+          .perform(Selector(("addTestObserver:")), with: TestObserver())
+      }
+    #elseif os(WASI)
+      if _XCTIsTesting {
+        XCTestObservationCenter.shared.addTestObserver(
+          TestObserver({
+            DependencyValues._current.cachedValues.cached = [:]
+          }))
+      }
+    #else
+      typealias RegisterTestObserver = @convention(thin) (@convention(c) () -> Void) -> Void
+      var pRegisterTestObserver: RegisterTestObserver? = nil
+
+      #if os(Windows)
+        let hModule = LoadLibraryA("DependenciesTestObserver.dll")
+        if let hModule,
+          let pAddress = GetProcAddress(hModule, "$s24DependenciesTestObserver08registerbC0yyyyXCF")
+        {
+          pRegisterTestObserver = unsafeBitCast(pAddress, to: RegisterTestObserver.self)
+        }
+      #else
+        let hModule: UnsafeMutableRawPointer? = dlopen("libDependenciesTestObserver.so", RTLD_NOW)
+        if let hModule,
+          let pAddress = dlsym(hModule, "$s24DependenciesTestObserver08registerbC0yyyyXCF")
+        {
+          pRegisterTestObserver = unsafeBitCast(pAddress, to: RegisterTestObserver.self)
+        }
+      #endif
+      pRegisterTestObserver?({
+        DependencyValues._current.cachedValues.cached = [:]
+      })
     #endif
+  }
+
+  @_disfavoredOverload
+  public subscript<Key: TestDependencyKey>(type: Key.Type) -> Key.Value {
+    get { self[type] }
+    set { self[type] = newValue }
   }
 
   /// Accesses the dependency value associated with a custom key.
@@ -123,9 +211,9 @@ public struct DependencyValues: Sendable {
   /// property wrapper.
   public subscript<Key: TestDependencyKey>(
     key: Key.Type,
-    file: StaticString = #file,
-    function: StaticString = #function,
-    line: UInt = #line
+    file file: StaticString = #file,
+    function function: StaticString = #function,
+    line line: UInt = #line
   ) -> Key.Value where Key.Value: Sendable {
     get {
       guard let base = self.storage[ObjectIdentifier(key)]?.base,
@@ -273,138 +361,88 @@ private final class CachedValues: @unchecked Sendable {
     function: StaticString = #function,
     line: UInt = #line
   ) -> Key.Value where Key.Value: Sendable {
-    self.lock.lock()
-    defer { self.lock.unlock() }
+    XCTFailContext.$current.withValue(XCTFailContext(file: file, line: line)) {
+      self.lock.lock()
+      defer { self.lock.unlock() }
 
-    let cacheKey = CacheKey(id: ObjectIdentifier(key), context: context)
-    guard let base = self.cached[cacheKey]?.base, let value = base as? Key.Value
-    else {
-      let value: Key.Value?
-      switch context {
-      case .live:
-        value = _liveValue(key) as? Key.Value
-      case .preview:
-        value = Key.previewValue
-      case .test:
-        value = Key.testValue
-      }
-
-      guard let value = value
+      let cacheKey = CacheKey(id: ObjectIdentifier(key), context: context)
+      guard let base = self.cached[cacheKey]?.base, let value = base as? Key.Value
       else {
-        #if DEBUG
-          if !DependencyValues.isSetting {
-            var dependencyDescription = ""
-            if let fileID = DependencyValues.currentDependency.fileID,
-              let line = DependencyValues.currentDependency.line
-            {
-              dependencyDescription.append(
-                """
-                  Location:
-                    \(fileID):\(line)
+        let value: Key.Value?
+        switch context {
+        case .live:
+          value = _liveValue(key) as? Key.Value
+        case .preview:
+          value = Key.previewValue
+        case .test:
+          value = Key.testValue
+        }
 
+        guard let value = value
+        else {
+          #if DEBUG
+            if !DependencyValues.isSetting {
+              var dependencyDescription = ""
+              if let fileID = DependencyValues.currentDependency.fileID,
+                let line = DependencyValues.currentDependency.line
+              {
+                dependencyDescription.append(
+                  """
+                    Location:
+                      \(fileID):\(line)
+
+                  """
+                )
+              }
+              dependencyDescription.append(
+                Key.self == Key.Value.self
+                  ? """
+                    Dependency:
+                      \(typeName(Key.Value.self))
+                  """
+                  : """
+                    Key:
+                      \(typeName(Key.self))
+                    Value:
+                      \(typeName(Key.Value.self))
+                  """
+              )
+
+              var argument: String {
+                "\(function)" == "subscript(_:)" ? "\(typeName(Key.self)).self" : "\\.\(function)"
+              }
+
+              runtimeWarn(
                 """
+                @Dependency(\(argument)) has no live implementation, but was accessed from a live \
+                context.
+
+                \(dependencyDescription)
+
+                Every dependency registered with the library must conform to 'DependencyKey', and \
+                that conformance must be visible to the running application.
+
+                To fix, make sure that '\(typeName(Key.self))' conforms to 'DependencyKey' by \
+                providing a live implementation of your dependency, and make sure that the \
+                conformance is linked with this current application.
+                """,
+                file: DependencyValues.currentDependency.file ?? file,
+                line: DependencyValues.currentDependency.line ?? line
               )
             }
-            dependencyDescription.append(
-              Key.self == Key.Value.self
-                ? """
-                  Dependency:
-                    \(typeName(Key.Value.self))
-                """
-                : """
-                  Key:
-                    \(typeName(Key.self))
-                  Value:
-                    \(typeName(Key.Value.self))
-                """
-            )
-
-            runtimeWarn(
-              """
-              "@Dependency(\\.\(function))" has no live implementation, but was accessed from a \
-              live context.
-
-              \(dependencyDescription)
-
-              Every dependency registered with the library must conform to "DependencyKey", and \
-              that conformance must be visible to the running application.
-
-              To fix, make sure that "\(typeName(Key.self))" conforms to "DependencyKey" by \
-              providing a live implementation of your dependency, and make sure that the \
-              conformance is linked with this current application.
-              """,
-              file: DependencyValues.currentDependency.file ?? file,
-              line: DependencyValues.currentDependency.line ?? line
-            )
+          #endif
+          let value = Key.testValue
+          if !DependencyValues.isSetting {
+            self.cached[cacheKey] = AnySendable(value)
           }
-        #endif
-        return Key.testValue
+          return value
+        }
+
+        self.cached[cacheKey] = AnySendable(value)
+        return value
       }
 
-      self.cached[cacheKey] = AnySendable(value)
       return value
     }
-
-    return value
   }
 }
-
-// NB: We cannot statically link/load XCTest on Apple platforms, so we dynamically load things
-//     instead on platforms where XCTest is available.
-#if canImport(XCTest)
-  private let setUpTestObservers: Void = {
-    if _XCTIsTesting {
-      #if canImport(ObjectiveC)
-        DispatchQueue.mainSync {
-          guard
-            let XCTestObservation = objc_getProtocol("XCTestObservation"),
-            let XCTestObservationCenter = NSClassFromString("XCTestObservationCenter"),
-            let XCTestObservationCenter = XCTestObservationCenter as Any as? NSObjectProtocol,
-            let XCTestObservationCenterShared =
-              XCTestObservationCenter
-              .perform(Selector(("sharedTestObservationCenter")))?
-              .takeUnretainedValue()
-          else { return }
-          let testCaseWillStartBlock: @convention(block) (AnyObject) -> Void = { _ in
-            DependencyValues._current.cachedValues.cached = [:]
-          }
-          let testCaseWillStartImp = imp_implementationWithBlock(testCaseWillStartBlock)
-          class_addMethod(
-            TestObserver.self, Selector(("testCaseWillStart:")), testCaseWillStartImp, nil)
-          class_addProtocol(TestObserver.self, XCTestObservation)
-          _ =
-            XCTestObservationCenterShared
-            .perform(Selector(("addTestObserver:")), with: TestObserver())
-        }
-      #else
-        XCTestObservationCenter.shared.addTestObserver(TestObserver())
-      #endif
-    }
-  }()
-
-  #if canImport(ObjectiveC)
-    private final class TestObserver: NSObject {}
-
-    extension DispatchQueue {
-      private static let key = DispatchSpecificKey<UInt8>()
-      private static let value: UInt8 = 0
-
-      fileprivate static func mainSync<R>(execute block: @Sendable () -> R) -> R {
-        Self.main.setSpecific(key: Self.key, value: Self.value)
-        if getSpecific(key: Self.key) == Self.value {
-          return block()
-        } else {
-          return Self.main.sync(execute: block)
-        }
-      }
-    }
-  #else
-    import XCTest
-
-    private final class TestObserver: NSObject, XCTestObservation {
-      func testCaseWillStart(_ testCase: XCTestCase) {
-        DependencyValues._current.cachedValues.cached = [:]
-      }
-    }
-  #endif
-#endif

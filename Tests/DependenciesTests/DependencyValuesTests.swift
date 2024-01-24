@@ -27,7 +27,7 @@ final class DependencyValuesTests: XCTestCase {
         }
       } issueMatcher: {
         $0.compactDescription == """
-          "@Dependency(\\.missingLiveDependency)" has no live implementation, but was accessed \
+          @Dependency(\\.missingLiveDependency) has no live implementation, but was accessed \
           from a live context.
 
             Location:
@@ -37,10 +37,44 @@ final class DependencyValuesTests: XCTestCase {
             Value:
               Int
 
-          Every dependency registered with the library must conform to "DependencyKey", and that \
+          Every dependency registered with the library must conform to 'DependencyKey', and that \
           conformance must be visible to the running application.
 
-          To fix, make sure that "TestKey" conforms to "DependencyKey" by providing a live \
+          To fix, make sure that 'TestKey' conforms to 'DependencyKey' by providing a live \
+          implementation of your dependency, and make sure that the conformance is linked with \
+          this current application.
+          """
+      }
+    #endif
+  }
+
+  func testMissingLiveValue_Type() {
+    #if DEBUG && !os(Linux) && !os(WASI) && !os(Windows)
+      var line = 0
+      XCTExpectFailure {
+        withDependencies {
+          $0.context = .live
+        } operation: {
+          line = #line + 1
+          @Dependency(TestKey.self) var missingLiveDependency: Int
+          _ = missingLiveDependency
+        }
+      } issueMatcher: {
+        $0.compactDescription == """
+          @Dependency(TestKey.self) has no live implementation, but was accessed from a live \
+          context.
+
+            Location:
+              DependenciesTests/DependencyValuesTests.swift:\(line)
+            Key:
+              TestKey
+            Value:
+              Int
+
+          Every dependency registered with the library must conform to 'DependencyKey', and that \
+          conformance must be visible to the running application.
+
+          To fix, make sure that 'TestKey' conforms to 'DependencyKey' by providing a live \
           implementation of your dependency, and make sure that the conformance is linked with \
           this current application.
           """
@@ -169,7 +203,7 @@ final class DependencyValuesTests: XCTestCase {
               XCTExpectFailure {
                 $0.compactDescription.contains(
                   """
-                  @Dependency(\\.reuseClient)" has no live implementation, but was accessed from a \
+                  @Dependency(\\.reuseClient) has no live implementation, but was accessed from a \
                   live context.
                   """
                 )
@@ -179,8 +213,8 @@ final class DependencyValuesTests: XCTestCase {
             reuseClient.setCount(-42)
             XCTAssertEqual(
               reuseClient.count(),
-              0,
-              "Don't cache dependency when using a test value in a live context"
+              -42,
+              "Dependency should cache when using a test value in a live context"
             )
           }
 
@@ -205,8 +239,8 @@ final class DependencyValuesTests: XCTestCase {
             XCTExpectFailure {
               $0.compactDescription.contains(
                 """
-                @Dependency(\\.reuseClient)" has no live implementation, but was accessed from a live \
-                context.
+                @Dependency(\\.reuseClient) has no live implementation, but was accessed from a \
+                live context.
                 """
               )
             }
@@ -360,28 +394,32 @@ final class DependencyValuesTests: XCTestCase {
       self.wait(for: [expectation], timeout: 1)
     }
 
-    func testEscapingInFeatureModel_InstanceVariablePropagated() {
-      let expectation = self.expectation(description: "escape")
+    #if !os(Linux)
+      @MainActor
+      func testEscapingInFeatureModel_InstanceVariablePropagated() {
+        let expectation = self.expectation(description: "escape")
 
-      class FeatureModel /*: ObservableObject*/ {
-        @Dependency(\.fullDependency) var fullDependency
-        func doSomething(expectation: XCTestExpectation) {
-          DispatchQueue.main.async {
-            XCTAssertEqual(self.fullDependency.value, 42)
-            expectation.fulfill()
+        @MainActor
+        class FeatureModel /*: ObservableObject*/ {
+          @Dependency(\.fullDependency) var fullDependency
+          func doSomething(expectation: XCTestExpectation) {
+            DispatchQueue.main.async {
+              XCTAssertEqual(self.fullDependency.value, 42)
+              expectation.fulfill()
+            }
           }
         }
-      }
 
-      let model = withDependencies {
-        $0.fullDependency.value = 42
-      } operation: {
-        FeatureModel()
-      }
+        let model = withDependencies {
+          $0.fullDependency.value = 42
+        } operation: {
+          FeatureModel()
+        }
 
-      model.doSomething(expectation: expectation)
-      self.wait(for: [expectation], timeout: 1)
-    }
+        model.doSomething(expectation: expectation)
+        self.wait(for: [expectation], timeout: 1)
+      }
+    #endif
 
     func testEscapingInFeatureModel_NotPropagated() async {
       let expectation = self.expectation(description: "escape")
@@ -593,32 +631,22 @@ final class DependencyValuesTests: XCTestCase {
   }
 
   #if DEBUG
-    // NB: Wasm has different behavior here.
-    #if os(WASI)
-      func testCachePollution1() async {
-        @Dependency(\.cachedDependency) var cachedDependency: CachedDependency
-        let value = await cachedDependency.increment()
-        XCTAssertEqual(value, 1)
-      }
+    func testCachePollution1() async {
+      @Dependency(\.cachedDependency) var cachedDependency: CachedDependency
+      let value = await cachedDependency.increment()
+      XCTAssertEqual(value, 1)
+    }
 
-      func testCachePollution2() async {
-        @Dependency(\.cachedDependency) var cachedDependency: CachedDependency
-        let value = await cachedDependency.increment()
+    func testCachePollution2() async {
+      @Dependency(\.cachedDependency) var cachedDependency: CachedDependency
+      let value = await cachedDependency.increment()
+      // NB: Wasm has different behavior here.
+      #if os(WASI)
         XCTAssertEqual(value, 2)
-      }
-    #else
-      func testCachePollution1() async {
-        @Dependency(\.cachedDependency) var cachedDependency: CachedDependency
-        let value = await cachedDependency.increment()
+      #else
         XCTAssertEqual(value, 1)
-      }
-
-      func testCachePollution2() async {
-        @Dependency(\.cachedDependency) var cachedDependency: CachedDependency
-        let value = await cachedDependency.increment()
-        XCTAssertEqual(value, 1)
-      }
-    #endif
+      #endif
+    }
   #endif
 
   func testThreadSafety() async {
@@ -630,7 +658,7 @@ final class DependencyValuesTests: XCTestCase {
     let taskCount = 10
 
     for _ in 1...runCount {
-      defer { CountInitDependency.initCount = 0 }
+      defer { CountInitDependency.initCount.setValue(0) }
       await withDependencies {
         $0 = .test
       } operation: {
@@ -643,17 +671,17 @@ final class DependencyValuesTests: XCTestCase {
           }
           for await _ in group {}
         }
-        XCTAssertEqual(CountInitDependency.initCount, 1)
+        XCTAssertEqual(CountInitDependency.initCount.value, 1)
       }
     }
   }
 }
 
 struct CountInitDependency: TestDependencyKey {
-  static var initCount = 0
-  var fetch: () -> Int
+  static let initCount = LockIsolated(0)
+  var fetch: @Sendable () -> Int
   static var testValue: Self {
-    initCount += 1
+    initCount.withValue { $0 += 1 }
     return Self { 42 }
   }
 }
@@ -766,7 +794,7 @@ struct ReuseClient: TestDependencyKey {
   }
 }
 
-private struct FullDependency: DependencyKey {
+private struct FullDependency: DependencyKey, Sendable {
   var value: Int
   static var liveValue: FullDependency {
     Self(value: 1)

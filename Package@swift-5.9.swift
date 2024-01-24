@@ -1,5 +1,6 @@
-// swift-tools-version: 5.7.1
+// swift-tools-version: 5.9
 
+import CompilerPluginSupport
 import PackageDescription
 
 let package = Package(
@@ -14,16 +15,28 @@ let package = Package(
     .library(
       name: "Dependencies",
       targets: ["Dependencies"]
-    )
+    ),
+    .library(
+      name: "DependenciesMacros",
+      targets: ["DependenciesMacros"]
+    ),
   ],
   dependencies: [
+    .package(url: "https://github.com/apple/swift-syntax", from: "509.0.0"),
     .package(url: "https://github.com/google/swift-benchmark", from: "0.1.0"),
     .package(url: "https://github.com/pointfreeco/combine-schedulers", from: "1.0.0"),
     .package(url: "https://github.com/pointfreeco/swift-clocks", from: "1.0.0"),
     .package(url: "https://github.com/pointfreeco/swift-concurrency-extras", from: "1.0.0"),
+    .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.2.0"),
     .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.0.0"),
   ],
   targets: [
+    .target(
+      name: "DependenciesTestObserver",
+      dependencies: [
+        .product(name: "XCTestDynamicOverlay", package: "xctest-dynamic-overlay"),
+      ]
+    ),
     .target(
       name: "Dependencies",
       dependencies: [
@@ -36,7 +49,29 @@ let package = Package(
     .testTarget(
       name: "DependenciesTests",
       dependencies: [
-        "Dependencies"
+        "Dependencies",
+        "DependenciesMacros",
+      ]
+    ),
+    .target(
+      name: "DependenciesMacros",
+      dependencies: [
+        "DependenciesMacrosPlugin",
+        .product(name: "XCTestDynamicOverlay", package: "xctest-dynamic-overlay"),
+      ]
+    ),
+    .macro(
+      name: "DependenciesMacrosPlugin",
+      dependencies: [
+        .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+        .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+      ]
+    ),
+    .testTarget(
+      name: "DependenciesMacrosPluginTests",
+      dependencies: [
+        "DependenciesMacrosPlugin",
+        .product(name: "MacroTesting", package: "swift-macro-testing"),
       ]
     ),
     .executableTarget(
@@ -54,6 +89,16 @@ let package = Package(
   package.dependencies.append(
     .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.0.0")
   )
+#endif
+
+#if !os(macOS) && !os(WASI)
+package.products.append(
+  .library(
+    name: "DependenciesTestObserver",
+    type: .dynamic,
+    targets: ["DependenciesTestObserver"]
+  )
+)
 #endif
 
 //for target in package.targets {
