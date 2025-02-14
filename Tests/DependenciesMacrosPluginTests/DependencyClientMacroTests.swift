@@ -13,6 +13,7 @@ final class DependencyClientMacroTests: BaseTestCase {
   }
 
   func testBasics() {
+    
     assertMacro {
       """
       @DependencyClient
@@ -276,6 +277,35 @@ final class DependencyClientMacroTests: BaseTestCase {
     }
   }
 
+  func testStaticVar() {
+    assertMacro {
+      """
+      @DependencyClient
+      struct Client {
+        var config: () -> Void
+        static var value = Client()
+      }
+      """
+    } expansion: {
+      """
+      struct Client {
+        @DependencyEndpoint
+        var config: () -> Void
+        static var value = Client()
+
+        init(
+          config: @escaping () -> Void
+        ) {
+          self.config = config
+        }
+
+        init() {
+        }
+      }
+      """
+    }
+  }
+
   func testDefaultValue() {
     assertMacro {
       """
@@ -384,6 +414,33 @@ final class DependencyClientMacroTests: BaseTestCase {
         }
 
         init() {
+        }
+      }
+      """
+    }
+  }
+
+  func testPackage() {
+    assertMacro {
+      """
+      @DependencyClient
+      package struct Client {
+        package var endpoint: () -> Void
+      }
+      """
+    } expansion: {
+      """
+      package struct Client {
+        @DependencyEndpoint
+        package var endpoint: () -> Void
+
+        package init(
+          endpoint: @escaping () -> Void
+        ) {
+          self.endpoint = endpoint
+        }
+
+        package init() {
         }
       }
       """
@@ -560,6 +617,82 @@ final class DependencyClientMacroTests: BaseTestCase {
     }
   }
 
+  func testWithDependencyEndpointIgnored() {
+    assertMacro {
+      """
+      @DependencyClient
+      struct Client: Sendable {
+      
+        let id = UUID()
+        var endpoint: @Sendable () -> Void
+
+        @DependencyEndpointIgnored
+        var ignoredVar: @Sendable () -> Void
+      }
+      """
+    } expansion: {
+      """
+      struct Client: Sendable {
+
+        let id = UUID()
+        @DependencyEndpoint
+        var endpoint: @Sendable () -> Void
+
+        @DependencyEndpointIgnored
+        var ignoredVar: @Sendable () -> Void
+
+        init(
+          endpoint: @Sendable @escaping () -> Void
+        ) {
+          self.endpoint = endpoint
+        }
+
+        init() {
+        }
+      }
+      """
+    }
+  }
+
+  func testWithDependencyMacro() {
+    assertMacro {
+      """
+      @DependencyClient
+      struct Client: Sendable {
+        @Dependency(TypedDependency.self) var typedDependency
+        @Dependency(TypedDependency.self) var typedDependency: TypedDependency
+        @Dependency(\\.dependency1) var dependency1
+        @Dependency(\\.dependency2) var dependency2: DependencyTwo
+
+        let id = UUID()
+        var endpoint: @Sendable () -> Void
+      }
+      """
+    } expansion: {
+      #"""
+      struct Client: Sendable {
+        @Dependency(TypedDependency.self) var typedDependency
+        @Dependency(TypedDependency.self) var typedDependency: TypedDependency
+        @Dependency(\.dependency1) var dependency1
+        @Dependency(\.dependency2) var dependency2: DependencyTwo
+
+        let id = UUID()
+        @DependencyEndpoint
+        var endpoint: @Sendable () -> Void
+
+        init(
+          endpoint: @Sendable @escaping () -> Void
+        ) {
+          self.endpoint = endpoint
+        }
+
+        init() {
+        }
+      }
+      """#
+    }
+  }
+
   func testLet_WithDefault() {
     assertMacro {
       """
@@ -680,8 +813,9 @@ final class DependencyClientMacroTests: BaseTestCase {
       }
       """
     } expansion: {
-      """
-      struct Client {@available(iOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(macOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(tvOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(watchOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.")
+      #"""
+      struct Client {
+        @available(iOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(macOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(tvOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(watchOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.")
         var fetch: (_ id: Int) throws -> String {
           @storageRestrictions(initializes: _fetch)
           init(initialValue) {
@@ -700,7 +834,7 @@ final class DependencyClientMacroTests: BaseTestCase {
         }
 
         @available(iOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(macOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(tvOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(watchOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") private var _fetch: (_ id: Int) throws -> String = { _ in
-          XCTestDynamicOverlay.XCTFail("Unimplemented: 'fetch'")
+          IssueReporting.reportIssue("Unimplemented: '\(Self.self).fetch'")
           throw DependenciesMacros.Unimplemented("fetch")
         }
 
@@ -713,7 +847,7 @@ final class DependencyClientMacroTests: BaseTestCase {
         init() {
         }
       }
-      """
+      """#
     }
   }
 
@@ -727,7 +861,7 @@ final class DependencyClientMacroTests: BaseTestCase {
       }
       """
     } expansion: {
-      """
+      #"""
       struct Client {
         @available(iOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(macOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(tvOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(watchOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.")
         var fetch: (_ id: Int) throws -> String {
@@ -748,7 +882,7 @@ final class DependencyClientMacroTests: BaseTestCase {
         }
 
         @available(iOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(macOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(tvOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(watchOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") private var _fetch: (_ id: Int) throws -> String = { _ in
-          XCTestDynamicOverlay.XCTFail("Unimplemented: 'fetch'")
+          IssueReporting.reportIssue("Unimplemented: '\(Self.self).fetch'")
           throw DependenciesMacros.Unimplemented("fetch")
         }
 
@@ -761,7 +895,7 @@ final class DependencyClientMacroTests: BaseTestCase {
         init() {
         }
       }
-      """
+      """#
     }
   }
 
@@ -774,7 +908,7 @@ final class DependencyClientMacroTests: BaseTestCase {
       }
       """
     } expansion: {
-      """
+      #"""
       struct Client {
         var fetch: (Int) throws -> String {
           @storageRestrictions(initializes: _fetch)
@@ -790,7 +924,7 @@ final class DependencyClientMacroTests: BaseTestCase {
         }
 
         private var _fetch: (Int) throws -> String = { _ in
-          XCTestDynamicOverlay.XCTFail("Unimplemented: 'fetch'")
+          IssueReporting.reportIssue("Unimplemented: '\(Self.self).fetch'")
           throw DependenciesMacros.Unimplemented("fetch")
         }
 
@@ -803,7 +937,7 @@ final class DependencyClientMacroTests: BaseTestCase {
         init() {
         }
       }
-      """
+      """#
     }
   }
 
@@ -840,21 +974,21 @@ final class DependencyClientMacroTests: BaseTestCase {
       struct Client {
         @DependencyEndpoint
         var endpoint: () -> Void
-        var value: <#Type#> 
+        var value: <#Type#> = Value()
 
         init(
           endpoint: @escaping () -> Void,
-          value: <#Type
+          value: <#Type#> = Value()
         ) {
-        self.endpoint = endpoint
-        self.value = value
+          self.endpoint = endpoint
+          self.value = value
         }
 
         init(
-          value: <#Type
+          value: <#Type#> = Value()
         ) {
-        self.value = value
-        }= Value()
+          self.value = value
+        }
       }
       """
     }

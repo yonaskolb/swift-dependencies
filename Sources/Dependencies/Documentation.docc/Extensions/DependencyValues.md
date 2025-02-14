@@ -5,12 +5,14 @@
 ### Creating and accessing values
 
 - ``init()``
-- ``subscript(_:_:_:_:)``
+- ``subscript(_:fileID:filePath:line:column:function:)``
+- ``subscript(_:)``
 
 ### Overriding values
 
 - ``withDependencies(_:operation:)-4uz6m``
-- ``withDependencies(from:operation:file:line:)-8e74m``
+- ``withDependencies(from:operation:fileID:filePath:line:column:)``
+- ``prepareDependencies(_:)``
 
 ### Escaping contexts
 
@@ -18,6 +20,8 @@
 
 ### Dependency values
 
+- ``assert``
+- ``assertionFailure``
 - ``calendar``
 - ``context``
 - ``continuousClock``
@@ -27,6 +31,7 @@
 - ``mainQueue``
 - ``mainRunLoop``
 - ``openURL``
+- ``precondition``
 - ``suspendingClock``
 - ``timeZone``
 - ``urlSession``

@@ -2,8 +2,11 @@ import SwiftDiagnostics
 import SwiftOperators
 import SwiftSyntax
 import SwiftSyntaxBuilder
-import SwiftSyntaxMacroExpansion
 import SwiftSyntaxMacros
+
+#if !canImport(SwiftSyntax600)
+  import SwiftSyntaxMacroExpansion
+#endif
 
 public enum DependencyClientMacro: MemberAttributeMacro, MemberMacro {
   public static func expansion<D: DeclGroupSyntax, M: DeclSyntaxProtocol, C: MacroExpansionContext>(
@@ -12,6 +15,10 @@ public enum DependencyClientMacro: MemberAttributeMacro, MemberMacro {
     providingAttributesFor member: M,
     in context: C
   ) throws -> [AttributeSyntax] {
+    if member.as(VariableDeclSyntax.self)?.isIgnored == true {
+      return []
+    }
+
     guard
       let property = member.as(VariableDeclSyntax.self),
       property.bindingSpecifier.tokenKind != .keyword(.let),
@@ -26,7 +33,7 @@ public enum DependencyClientMacro: MemberAttributeMacro, MemberMacro {
     if let initializer = binding.initializer {
       guard try !initializer.diagnose(node, context: context).earlyOut
       else { return [] }
-    } else if functionType.effectSpecifiers?.throwsSpecifier == nil,
+    } else if functionType.effectSpecifiers?.hasThrowsClause != true,
       !functionType.isVoid,
       !functionType.isOptional
     {
@@ -62,6 +69,7 @@ public enum DependencyClientMacro: MemberAttributeMacro, MemberMacro {
         }
       )
     }
+
     return attributes
   }
 
@@ -86,10 +94,15 @@ public enum DependencyClientMacro: MemberAttributeMacro, MemberMacro {
     var hasEndpoints = false
     var accesses: Set<Access> = Access(modifiers: declaration.modifiers).map { [$0] } ?? []
     for member in declaration.memberBlock.members {
-      guard var property = member.decl.as(VariableDeclSyntax.self) else { continue }
+      guard
+        var property = member.decl.as(VariableDeclSyntax.self),
+        !property.isStatic
+      else { continue }
+
       let isEndpoint =
         property.hasDependencyEndpointMacroAttached
         || property.bindingSpecifier.tokenKind != .keyword(.let) && property.isClosure
+
       let propertyAccess = Access(modifiers: property.modifiers)
       guard
         var binding = property.bindings.first,
@@ -107,11 +120,14 @@ public enum DependencyClientMacro: MemberAttributeMacro, MemberMacro {
           if accessors.contains(where: { $0.accessorSpecifier.tokenKind == .keyword(.get) }) {
             continue
           }
+        @unknown default: return []
         }
       }
 
       if propertyAccess == .private, binding.initializer != nil { continue }
       accesses.insert(propertyAccess ?? .internal)
+
+      if property.isIgnored { continue }
 
       guard let type = binding.typeAnnotation?.type ?? binding.initializer?.value.literalType
       else {
@@ -152,19 +168,31 @@ public enum DependencyClientMacro: MemberAttributeMacro, MemberMacro {
         )
         return []
       }
+
       if var attributedTypeSyntax = type.as(AttributedTypeSyntax.self),
         attributedTypeSyntax.baseType.is(FunctionTypeSyntax.self)
       {
         attributedTypeSyntax.attributes.append(
           .attribute("@escaping").with(\.trailingTrivia, .space)
         )
-        binding.typeAnnotation?.type = attributedTypeSyntax.cast(TypeSyntax.self)
+        binding.typeAnnotation?.type = TypeSyntax(attributedTypeSyntax)
       } else if let typeSyntax = type.as(FunctionTypeSyntax.self) {
-        binding.typeAnnotation?.type = AttributedTypeSyntax(
-          attributes: [.attribute("@escaping").with(\.trailingTrivia, .space)],
-          baseType: typeSyntax
-        )
-        .cast(TypeSyntax.self)
+        #if canImport(SwiftSyntax600)
+          binding.typeAnnotation?.type = TypeSyntax(
+            AttributedTypeSyntax(
+              specifiers: [],
+              attributes: [.attribute("@escaping").with(\.trailingTrivia, .space)],
+              baseType: typeSyntax
+            )
+          )
+        #else
+          binding.typeAnnotation?.type = TypeSyntax(
+            AttributedTypeSyntax(
+              attributes: [.attribute("@escaping").with(\.trailingTrivia, .space)],
+              baseType: typeSyntax
+            )
+          )
+        #endif
       } else if binding.typeAnnotation == nil {
         binding.pattern.trailingTrivia = ""
         binding.typeAnnotation = TypeAnnotationSyntax(
@@ -208,6 +236,7 @@ public enum DependencyClientMacro: MemberAttributeMacro, MemberMacro {
 private enum Access: Comparable {
   case `private`
   case `internal`
+  case `package`
   case `public`
 
   init?(modifiers: DeclModifierListSyntax) {
@@ -218,6 +247,9 @@ private enum Access: Comparable {
         return
       case .keyword(.internal):
         self = .internal
+        return
+      case .keyword(.package):
+        self = .package
         return
       case .keyword(.public):
         self = .public
@@ -235,6 +267,8 @@ private enum Access: Comparable {
       return .keyword(.private)
     case .internal:
       return nil
+    case .package:
+      return .keyword(.package)
     case .public:
       return .keyword(.public)
     }
@@ -248,15 +282,41 @@ private struct Property {
 }
 
 extension VariableDeclSyntax {
-  fileprivate var hasDependencyEndpointMacroAttached: Bool {
+  fileprivate var isStatic: Bool {
+    self.modifiers.contains { modifier in
+      modifier.name.tokenKind == .keyword(.static)
+    }
+  }
+
+  fileprivate static let dependencyEndpointName = "DependencyEndpoint"
+  fileprivate static let dependencyEndpointIgnoredName = "DependencyEndpointIgnored"
+  fileprivate static let dependencyName = "Dependency"
+
+  fileprivate func hasMacroAttached(_ macro: String) -> Bool {
     self.attributes.contains {
       guard
         case let .attribute(attribute) = $0,
         let attributeName = attribute.attributeName.as(IdentifierTypeSyntax.self)?.name.text,
-        ["DependencyEndpoint"].qualified("DependenciesMacros").contains(attributeName)
+        [macro].qualified("DependenciesMacros").contains(attributeName)
       else { return false }
       return true
     }
+  }
+
+  fileprivate var hasDependencyEndpointMacroAttached: Bool {
+    hasMacroAttached(Self.dependencyEndpointName)
+  }
+
+  fileprivate var hasDependencyEndpointIgnoredMacroAttached: Bool {
+    hasMacroAttached(Self.dependencyEndpointIgnoredName)
+  }
+
+  fileprivate var hasDependencyMacroAttached: Bool {
+    hasMacroAttached(Self.dependencyName)
+  }
+
+  fileprivate var isIgnored: Bool {
+    hasDependencyMacroAttached || hasDependencyEndpointIgnoredMacroAttached
   }
 }
 

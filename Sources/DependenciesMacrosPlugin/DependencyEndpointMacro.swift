@@ -3,8 +3,11 @@ import SwiftOperators
 import SwiftParser
 import SwiftSyntax
 import SwiftSyntaxBuilder
-import SwiftSyntaxMacroExpansion
 import SwiftSyntaxMacros
+
+#if !canImport(SwiftSyntax600)
+  import SwiftSyntaxMacroExpansion
+#endif
 
 public enum DependencyEndpointMacro: AccessorMacro, PeerMacro {
   public static func expansion<D: DeclSyntaxProtocol, C: MacroExpansionContext>(
@@ -98,7 +101,7 @@ public enum DependencyEndpointMacro: AccessorMacro, PeerMacro {
       unimplementedDefault = closure
     } else {
       unimplementedDefault = functionType.unimplementedDefault
-      if functionType.effectSpecifiers?.throwsSpecifier != nil {
+      if functionType.effectSpecifiers?.hasThrowsClause == true {
         unimplementedDefault.statements.append(
           """
           throw DependenciesMacros.Unimplemented("\(raw: unescapedIdentifier)")
@@ -123,9 +126,9 @@ public enum DependencyEndpointMacro: AccessorMacro, PeerMacro {
       }
     }
     unimplementedDefault.statements.insert(
-      """
-      XCTestDynamicOverlay.XCTFail("Unimplemented: '\(raw: unescapedIdentifier)'")
-      """,
+      #"""
+      IssueReporting.reportIssue("Unimplemented: '\(Self.self).\#(raw: unescapedIdentifier)'")
+      """#,
       at: unimplementedDefault.statements.startIndex
     )
     for index in unimplementedDefault.statements.indices {
@@ -134,7 +137,7 @@ public enum DependencyEndpointMacro: AccessorMacro, PeerMacro {
         .with(\.leadingTrivia, .newline)
     }
     var effectSpecifiers = ""
-    if functionType.effectSpecifiers?.throwsSpecifier != nil {
+    if functionType.effectSpecifiers?.hasThrowsClause == true {
       effectSpecifiers.append("try ")
     }
     if functionType.effectSpecifiers?.asyncSpecifier != nil {
@@ -190,7 +193,7 @@ public enum DependencyEndpointMacro: AccessorMacro, PeerMacro {
 
     let privateProperty = property.privatePrefixed("_", unimplementedDefault: unimplementedDefault)
 
-    return decls + [privateProperty.cast(DeclSyntax.self)]
+    return decls + [DeclSyntax(privateProperty)]
   }
 }
 
@@ -243,7 +246,7 @@ extension DeclModifierListSyntax {
         switch $0.name.tokenKind {
         case .keyword(let keyword):
           switch keyword {
-          case .fileprivate, .private, .internal, .public:
+          case .fileprivate, .private, .internal, .package, .public:
             return false
           default:
             return true
@@ -370,9 +373,30 @@ extension TupleTypeElementSyntax {
   }
 
   fileprivate var isInout: Bool {
-    self.type
-      .as(AttributedTypeSyntax.self)?
-      .specifier?
-      .tokenKind == .keyword(.inout)
+    #if canImport(SwiftSyntax600)
+      self.type
+        .as(AttributedTypeSyntax.self)?
+        .specifiers.contains(
+          where: { $0.as(SimpleTypeSpecifierSyntax.self)?.specifier.tokenKind == .keyword(.inout) }
+        ) == true
+    #else
+      self.type
+        .as(AttributedTypeSyntax.self)?
+        .specifier?
+        .tokenKind == .keyword(.inout)
+    #endif
+  }
+}
+
+public struct DependencyEndpointIgnoredMacro: AccessorMacro {
+  public static func expansion<
+    Context: MacroExpansionContext,
+    Declaration: DeclSyntaxProtocol
+  >(
+    of node: AttributeSyntax,
+    providingAccessorsOf declaration: Declaration,
+    in context: Context
+  ) throws -> [AccessorDeclSyntax] {
+    return []
   }
 }
