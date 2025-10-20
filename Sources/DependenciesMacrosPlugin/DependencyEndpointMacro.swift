@@ -32,12 +32,6 @@ public enum DependencyEndpointMacro: AccessorMacro, PeerMacro {
 
     return [
       """
-      @storageRestrictions(initializes: _\(raw: identifier))
-      init(initialValue) {
-      _\(raw: identifier) = initialValue
-      }
-      """,
-      """
       get {
       _\(raw: identifier)
       }
@@ -143,7 +137,10 @@ public enum DependencyEndpointMacro: AccessorMacro, PeerMacro {
     if functionType.effectSpecifiers?.asyncSpecifier != nil {
       effectSpecifiers.append("await ")
     }
-    let access = property.modifiers.first { $0.name.tokenKind == .keyword(.public) }
+
+    let access = property.modifiers.first {
+      [.keyword(.public), .keyword(.package)].contains($0.name.tokenKind)
+    }
 
     var decls: [DeclSyntax] = []
 
@@ -225,11 +222,10 @@ extension PatternBindingListSyntax {
             identifier: identifier.identifier.privatePrefixed(prefix),
             trailingTrivia: identifier.trailingTrivia
           ),
-          typeAnnotation: binding.typeAnnotation,
+          typeAnnotation: binding.typeAnnotation?.with(\.trailingTrivia, ""),
           initializer: InitializerClauseSyntax(value: unimplementedDefault),
           accessorBlock: binding.accessorBlock,
-          trailingComma: binding.trailingComma,
-          trailingTrivia: binding.trailingTrivia
+          trailingComma: binding.trailingComma
         )
       }
     }
@@ -284,8 +280,7 @@ extension VariableDeclSyntax {
         trailingTrivia: .space,
         presence: .present
       ),
-      bindings: bindings.privatePrefixed(prefix, unimplementedDefault: unimplementedDefault),
-      trailingTrivia: trailingTrivia
+      bindings: bindings.privatePrefixed(prefix, unimplementedDefault: unimplementedDefault)
     )
   }
 }

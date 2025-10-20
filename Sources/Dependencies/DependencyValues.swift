@@ -5,8 +5,10 @@ import IssueReporting
   import WinSDK
 #elseif canImport(Android)
   import Android
-#elseif os(Linux)
+#elseif canImport(Glibc)
   import Glibc
+#elseif canImport(Musl)
+  import Musl
 #endif
 // WASI does not support dynamic linking
 #if os(WASI)
@@ -119,7 +121,9 @@ import IssueReporting
 public struct DependencyValues: Sendable {
   @TaskLocal public static var _current = Self()
   @TaskLocal static var currentDependency = CurrentDependency()
-  @TaskLocal static var isSetting = false
+  #if DEBUG
+    @TaskLocal static var isSetting = false
+  #endif
   @TaskLocal static var preparationID: UUID?
   static var isPreparing: Bool {
     preparationID != nil
@@ -147,11 +151,15 @@ public struct DependencyValues: Sendable {
             .takeUnretainedValue()
         else { return }
         let testCaseWillStartBlock: @convention(block) (AnyObject) -> Void = { _ in
-          DependencyValues._current.cachedValues.cached = [:]
+          DependencyValues._current.cachedValues.resetCache()
         }
         let testCaseWillStartImp = imp_implementationWithBlock(testCaseWillStartBlock)
         class_addMethod(
-          TestObserver.self, Selector(("testCaseWillStart:")), testCaseWillStartImp, nil)
+          TestObserver.self,
+          Selector(("testCaseWillStart:")),
+          testCaseWillStartImp,
+          nil
+        )
         class_addProtocol(TestObserver.self, XCTestObservation)
         _ =
           XCTestObservationCenterShared
@@ -161,7 +169,7 @@ public struct DependencyValues: Sendable {
       if isTesting {
         XCTestObservationCenter.shared.addTestObserver(
           TestObserver {
-            DependencyValues._current.cachedValues.cached = [:]
+            DependencyValues._current.cachedValues.resetCache()
           }
         )
       }
@@ -185,7 +193,7 @@ public struct DependencyValues: Sendable {
         }
       #endif
       pRegisterTestObserver?({
-        DependencyValues._current.cachedValues.cached = [:]
+        DependencyValues._current.cachedValues.resetCache()
       })
     #endif
   }
@@ -227,7 +235,7 @@ public struct DependencyValues: Sendable {
     fileID fileID: StaticString = #fileID,
     filePath filePath: StaticString = #filePath,
     line line: UInt = #line,
-    column column: UInt = #line,
+    column column: UInt = #column,
     function function: StaticString = #function
   ) -> Key.Value {
     get {
@@ -276,63 +284,68 @@ public struct DependencyValues: Sendable {
     }
     set {
       if DependencyValues.isPreparing {
-        if context == .preview, Thread.isPreviewAppEntryPoint {
-          reportIssue("Ignoring dependencies prepared in preview app entry point")
-          return
-        }
+        #if canImport(SwiftUI)
+          if context == .preview, Thread.isPreviewAppEntryPoint {
+            return
+          }
+        #endif
+        cachedValues.lock.lock()
+        defer { cachedValues.lock.unlock() }
         let cacheKey = CachedValues.CacheKey(id: TypeIdentifier(key), context: context)
         guard !cachedValues.cached.keys.contains(cacheKey) else {
           if cachedValues.cached[cacheKey]?.preparationID != DependencyValues.preparationID {
-            reportIssue(
-              {
-                var dependencyDescription = ""
-                if let fileID = DependencyValues.currentDependency.fileID,
-                  let line = DependencyValues.currentDependency.line
+            if context != .preview {
+              reportIssue(
                 {
+                  var dependencyDescription = ""
+                  if let fileID = DependencyValues.currentDependency.fileID,
+                    let line = DependencyValues.currentDependency.line
+                  {
+                    dependencyDescription.append(
+                      """
+                        Location:
+                          \(fileID):\(line)
+
+                      """
+                    )
+                  }
                   dependencyDescription.append(
-                    """
-                      Location:
-                        \(fileID):\(line)
-
-                    """
+                    Key.self == Key.Value.self
+                      ? """
+                        Dependency:
+                          \(typeName(Key.Value.self))
+                      """
+                      : """
+                        Key:
+                          \(typeName(Key.self))
+                        Value:
+                          \(typeName(Key.Value.self))
+                      """
                   )
-                }
-                dependencyDescription.append(
-                  Key.self == Key.Value.self
-                    ? """
-                      Dependency:
-                        \(typeName(Key.Value.self))
+                  var argument: String {
+                    "\(function)" == "subscript(key:)"
+                      ? "\(typeName(Key.self)).self"
+                      : "\\.\(function)"
+                  }
+                  return """
+                    @Dependency(\(argument)) has already been accessed or prepared.
+
+                    \(dependencyDescription)
+
+                    A global dependency can only be prepared a single time and cannot be accessed \
+                    beforehand. Prepare dependencies as early as possible in the lifecycle of your \
+                    application.
+
+                    To temporarily override a dependency in your application, use \
+                    'withDependencies' to do so in a well-defined scope.
                     """
-                    : """
-                      Key:
-                        \(typeName(Key.self))
-                      Value:
-                        \(typeName(Key.Value.self))
-                    """
-                )
-                var argument: String {
-                  "\(function)" == "subscript(key:)"
-                    ? "\(typeName(Key.self)).self"
-                    : "\\.\(function)"
-                }
-                return """
-                  @Dependency(\(argument)) has already been accessed or prepared.
-
-                  \(dependencyDescription)
-
-                  A global dependency can only be prepared a single time and cannot be accessed \
-                  beforehand. Prepare dependencies as early as possible in the lifecycle of your \
-                  application.
-
-                  To temporarily override a dependency in your application, use 'withDependencies' \
-                  to do so in a well-defined scope.
-                  """
-              }(),
-              fileID: DependencyValues.currentDependency.fileID ?? fileID,
-              filePath: DependencyValues.currentDependency.filePath ?? filePath,
-              line: DependencyValues.currentDependency.line ?? line,
-              column: DependencyValues.currentDependency.column ?? column
-            )
+                }(),
+                fileID: DependencyValues.currentDependency.fileID ?? fileID,
+                filePath: DependencyValues.currentDependency.filePath ?? filePath,
+                line: DependencyValues.currentDependency.line ?? line,
+                column: DependencyValues.currentDependency.column ?? column
+              )
+            }
           } else {
             cachedValues.cached[cacheKey] = CachedValues.CachedValue(
               base: newValue,
@@ -394,11 +407,12 @@ public struct DependencyValues: Sendable {
 
   @_spi(Beta)
   @available(
-    *, deprecated,
+    *,
+    deprecated,
     message: "'resetCache' is no longer necessary for most (unparameterized) '@Test' cases"
   )
   public func resetCache() {
-    cachedValues.cached = [:]
+    cachedValues.resetCache()
   }
 }
 
@@ -471,8 +485,14 @@ public final class CachedValues: @unchecked Sendable {
     let preparationID: UUID?
   }
 
-  private let lock = NSRecursiveLock()
+  public let lock = NSRecursiveLock()
   public var cached = [CacheKey: CachedValue]()
+
+  public func resetCache() {
+    lock.lock()
+    defer { lock.unlock() }
+    cached = [:]
+  }
 
   func value<Key: TestDependencyKey>(
     for key: Key.Type,
@@ -481,7 +501,7 @@ public final class CachedValues: @unchecked Sendable {
     filePath: StaticString = #filePath,
     function: StaticString = #function,
     line: UInt = #line,
-    column: UInt = #line
+    column: UInt = #column
   ) -> Key.Value {
     lock.lock()
     defer { lock.unlock() }
@@ -559,36 +579,39 @@ public final class CachedValues: @unchecked Sendable {
         case .live:
           value = (key as? any DependencyKey.Type)?.liveValue as? Key.Value
         case .preview:
-          if Thread.isPreviewAppEntryPoint {
-            return Key.previewValue
-          }
+          #if canImport(SwiftUI)
+            if Thread.isPreviewAppEntryPoint {
+              return Key.previewValue
+            }
+          #endif
           if !CachedValues.isAccessingCachedDependencies {
             value = CachedValues.$isAccessingCachedDependencies.withValue(true) {
-              #if canImport(SwiftUI) && compiler(>=6)
-                return previewValues[key]
-              #else
-                return Key.previewValue
-              #endif
+              return Key.previewValue
             }
           } else {
             value = Key.previewValue
           }
         case .test:
-          if !CachedValues.isAccessingCachedDependencies,
-            case let .swiftTesting(.some(testing)) = TestContext.current,
-            let testValues = testValuesByTestID.withValue({ $0[testing.test.id.rawValue] })
-          {
-            value = CachedValues.$isAccessingCachedDependencies.withValue(true) {
-              testValues[key]
+          #if compiler(<6.1)
+            if !CachedValues.isAccessingCachedDependencies,
+              case let .swiftTesting(.some(testing)) = TestContext.current,
+              let testValues = testValuesByTestID.withValue({ $0[testing.test.id.rawValue] })
+            {
+              value = CachedValues.$isAccessingCachedDependencies.withValue(true) {
+                testValues[key]
+              }
+            } else {
+              value = Key.testValue
             }
-          } else {
+          #else
             value = Key.testValue
-          }
+          #endif
         }
 
         let cacheableValue = value ?? Key.testValue
         cached[cacheKey] = CachedValue(
-          base: cacheableValue, preparationID: DependencyValues.preparationID
+          base: cacheableValue,
+          preparationID: DependencyValues.preparationID
         )
         return cacheableValue
       }

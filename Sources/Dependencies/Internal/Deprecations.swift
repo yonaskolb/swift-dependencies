@@ -1,8 +1,10 @@
-// MARK: - Deprecated after 1.6.3
+#if canImport(SwiftUI)
+  import SwiftUI
+#endif
+
+// MARK: - Deprecated after 1.9.2
 
 #if canImport(SwiftUI) && compiler(>=6)
-  import SwiftUI
-
   @available(iOS 18, macOS 15, tvOS 18, watchOS 11, visionOS 2, *)
   extension PreviewTrait where T == Preview.ViewTraits {
     @available(
@@ -11,12 +13,11 @@
         Use 'withDependencies' or 'prepareDependencies' from the body of the preview, instead.
         """
     )
-    @_documentation(visibility: private)
     public static func dependency<Value>(
       _ keyPath: WritableKeyPath<DependencyValues, Value> & Sendable,
-      _ value: Value
+      _ value: @autoclosure @escaping @Sendable () throws -> Value
     ) -> PreviewTrait {
-      .dependencies { $0[keyPath: keyPath] = value }
+      .dependencies { $0[keyPath: keyPath] = try value() }
     }
 
     @available(
@@ -25,11 +26,10 @@
         Use 'withDependencies' or 'prepareDependencies' from the body of the preview, instead.
         """
     )
-    @_documentation(visibility: private)
     public static func dependency<Value: TestDependencyKey>(
-      _ value: Value
+      _ value: @autoclosure @escaping @Sendable () throws -> Value
     ) -> PreviewTrait where Value == Value.Value {
-      .dependencies { $0[Value.self] = value }
+      .dependencies { $0[Value.self] = try value() }
     }
 
     @available(
@@ -38,18 +38,43 @@
         Use 'withDependencies' or 'prepareDependencies' from the body of the preview, instead.
         """
     )
-    @_documentation(visibility: private)
     public static func dependencies(
-      _ updateValuesForPreview: (inout DependencyValues) -> Void
+      _ updateValuesForPreview: @escaping @Sendable (inout DependencyValues) throws -> Void
     ) -> PreviewTrait {
-      var copy = previewValues
-      defer { previewValues = copy }
-      updateValuesForPreview(&copy)
-      return PreviewTrait()
+      return .modifier(DependenciesPreviewModifier(updateValuesForPreview: updateValuesForPreview))
     }
   }
 
-  nonisolated(unsafe) var previewValues = DependencyValues(context: .preview)
+  private struct DependenciesPreviewModifier: PreviewModifier {
+    let updateValuesForPreview: @Sendable (inout DependencyValues) throws -> Void
+
+    func body(content: Content, context: ()) -> some View {
+      let error: (any Error)? = {
+        do {
+          try prepareDependencies(updateValuesForPreview)
+          return nil
+        } catch {
+          return error
+        }
+      }()
+      ZStack {
+        content
+        if let error {
+          VStack {
+            Text("Preview Trait Failure")
+              .font(.headline.bold())
+            Text(error.localizedDescription)
+              .font(.subheadline)
+          }
+          .foregroundColor(Color.white)
+          .padding()
+          .background(Color.red)
+          .cornerRadius(8)
+          .opacity(0.75)
+        }
+      }
+    }
+  }
 #endif
 
 // MARK: - Deprecated after 0.4.2
@@ -80,13 +105,14 @@ extension AsyncThrowingStream where Failure == Error {
 
 // MARK: -
 
+@available(*, deprecated)
+@_documentation(visibility: private)
 extension ActorIsolated {
   @available(
     *,
     deprecated,
     message: "Use the non-async version of 'withValue'."
   )
-  @_documentation(visibility: private)
   public func withValue<T: Sendable>(
     _ operation: @Sendable (inout Value) async throws -> T
   ) async rethrows -> T where Value: Sendable {

@@ -123,10 +123,7 @@ how the view changes, you can override the clock dependency to be an "immediate"
 
 ```swift
 #Preview {
-  let _ = prepareDependencies {
-    $0.continuousClock = .immediate
-  }
-
+  let _ = prepareDependencies { $0.continuousClock = ImmediateClock() }
   // All access of '@Dependency(\.continuousClock)' in this preview will
   // use an immediate clock.
   FeatureView(model: FeatureModel())

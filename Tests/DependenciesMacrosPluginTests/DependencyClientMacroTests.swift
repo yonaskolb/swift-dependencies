@@ -5,7 +5,7 @@ import XCTest
 final class DependencyClientMacroTests: BaseTestCase {
   override func invokeTest() {
     withMacroTesting(
-      // isRecording: true,
+      record: .failed,
       macros: [DependencyClientMacro.self]
     ) {
       super.invokeTest()
@@ -13,7 +13,6 @@ final class DependencyClientMacroTests: BaseTestCase {
   }
 
   func testBasics() {
-    
     assertMacro {
       """
       @DependencyClient
@@ -817,10 +816,6 @@ final class DependencyClientMacroTests: BaseTestCase {
       struct Client {
         @available(iOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(macOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(tvOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(watchOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.")
         var fetch: (_ id: Int) throws -> String {
-          @storageRestrictions(initializes: _fetch)
-          init(initialValue) {
-            _fetch = initialValue
-          }
           get {
             _fetch
           }
@@ -865,10 +860,6 @@ final class DependencyClientMacroTests: BaseTestCase {
       struct Client {
         @available(iOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(macOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(tvOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.") @available(watchOS, deprecated: 9999, message: "This property has a method equivalent that is preferred for autocomplete via this deprecation. It is perfectly fine to use for overriding and accessing via '@Dependency'.")
         var fetch: (_ id: Int) throws -> String {
-          @storageRestrictions(initializes: _fetch)
-          init(initialValue) {
-            _fetch = initialValue
-          }
           get {
             _fetch
           }
@@ -911,10 +902,6 @@ final class DependencyClientMacroTests: BaseTestCase {
       #"""
       struct Client {
         var fetch: (Int) throws -> String {
-          @storageRestrictions(initializes: _fetch)
-          init(initialValue) {
-            _fetch = initialValue
-          }
           get {
             _fetch
           }
@@ -1067,6 +1054,40 @@ final class DependencyClientMacroTests: BaseTestCase {
         }
 
         public init() {
+        }
+      }
+      """
+    }
+  }
+
+  func testComments() {
+    assertMacro {
+      """
+      @DependencyClient
+      struct Client {
+        var config: Bool = false  // This is a comment
+        var endpoint: () -> Void  // And this is a comment
+      }
+      """
+    } expansion: {
+      """
+      struct Client {
+        var config: Bool = false  // This is a comment
+        @DependencyEndpoint
+        var endpoint: () -> Void  // And this is a comment
+
+        init(
+          config: Bool = false,
+          endpoint: @escaping () -> Void
+        ) {
+          self.config = config
+          self.endpoint = endpoint
+        }
+
+        init(
+          config: Bool = false
+        ) {
+          self.config = config
         }
       }
       """

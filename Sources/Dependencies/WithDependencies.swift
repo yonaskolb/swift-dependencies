@@ -2,42 +2,78 @@ import Foundation
 
 /// Prepares global dependencies for the lifetime of your application.
 ///
+/// This can be used to set up the initial dependencies for your application in the entry point
+/// of your app, or for Xcode previews. It is best to call this as early as possible in the lifetime
+/// of your app.
+///
+/// For example, in a SwiftUI entry point, it is appropriate to call this in the initializer of
+/// your `App` conformance:
+///
+/// ```swift
+/// @main
+/// struct MyApp: App {
+///   init() {
+///     prepareDependencies {
+///       $0.defaultDatabase = try! DatabaseQueue(/* ... */)
+///     }
+///   }
+///
+///   // ...
+/// }
+/// ```
+///
+/// Or in an app delegate entry point, you can invoke it from `didFinishLaunchingWithOptions`:
+///
+/// ```swift
+/// @main
+/// class AppDelegate: UIResponder, UIApplicationDelegate {
+///   func application(
+///     _ application: UIApplication,
+///     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+///   ) -> Bool {
+///     prepareDependencies {
+///       $0.defaultDatabase = try! DatabaseQueue(/* ... */)
+///     }
+///     // Override point for customization after application launch.
+///     return true
+///   }
+///
+///   // ...
+/// }
+/// ```
+///
 /// > Important: A dependency key can be prepared at most a single time, and _must_ be prepared
-/// > before it has been accessed. Call `prepareDependencies` as early as possible in your
-/// > application, for example in your SwiftUI entry point:
+/// > before it has been accessed. If you attempt to prepare a dependency that has previously been
+/// > overridden or accessed, a runtime warning will be emitted.
+///
+/// You can also use ``prepareDependencies(_:)`` in Xcode previews, but you do have to use
+/// `let _` in order to play nicely with result builders:
+///
+/// ```swift
+/// #Preview {
+///   let _ = prepareDependencies {
+///     $0.defaultDatabase = try! DatabaseQueue(/* ... */)
+///   }
+///   FeatureView()
+/// }
+/// ```
+///
+/// > Note: It is technically possible to use ``prepareDependencies(_:)`` in tests:
 /// >
-/// > ```swift
-/// > @main
-/// > struct MyApp: App {
-/// >   init() {
-/// >     prepareDependencies {
-/// >       $0.defaultDatabase = try! DatabaseQueue(/* ... */)
-/// >     }
-/// >   }
+/// >```swift
+/// >@Suite struct FeatureTests {
+/// >  init() {
+/// >    prepareDependencies {
+/// >      $0.defaultDatabase = try! DatabaseQueue(/* ... */)
+/// >    }
+/// >  }
 /// >
-/// >   // ...
-/// > }
-/// > ```
+/// >  // ...
+/// >}
+/// >```
 /// >
-/// > Or your app delegate:
-/// >
-/// > ```swift
-/// > @main
-/// > class AppDelegate: UIResponder, UIApplicationDelegate {
-/// >   func application(
-/// >     _ application: UIApplication,
-/// >     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
-/// >   ) -> Bool {
-/// >     prepareDependencies {
-/// >       $0.defaultDatabase = try! DatabaseQueue(/* ... */)
-/// >     }
-/// >     // Override point for customization after application launch.
-/// >     return true
-/// >   }
-/// >
-/// >   // ...
-/// > }
-/// > ```
+/// > However, ``prepareDependencies(_:)`` is not compatible with running tests repeatedly or
+/// > parameterized tests, and so you may not want to use it for testing.
 ///
 /// - Parameter updateValues: A closure for updating the current dependency values for the
 ///   lifetime of your application.
@@ -46,7 +82,13 @@ public func prepareDependencies<R>(
 ) rethrows -> R {
   var dependencies = DependencyValues._current
   return try DependencyValues.$preparationID.withValue(UUID()) {
-    try updateValues(&dependencies)
+    #if DEBUG
+      try DependencyValues.$isSetting.withValue(true) {
+        try updateValues(&dependencies)
+      }
+    #else
+      try updateValues(&dependencies)
+    #endif
   }
 }
 
@@ -74,22 +116,34 @@ public func withDependencies<R>(
   _ updateValuesForOperation: (inout DependencyValues) throws -> Void,
   operation: () throws -> R
 ) rethrows -> R {
-  try isSetting(true) {
+  #if DEBUG
+    try DependencyValues.$isSetting.withValue(true) {
+      var dependencies = DependencyValues._current
+      try updateValuesForOperation(&dependencies)
+      return try DependencyValues.$_current.withValue(dependencies) {
+        try DependencyValues.$isSetting.withValue(false) {
+          let result = try operation()
+          if R.self is AnyClass {
+            dependencyObjects.store(result as AnyObject)
+          }
+          return result
+        }
+      }
+    }
+  #else
     var dependencies = DependencyValues._current
     try updateValuesForOperation(&dependencies)
     return try DependencyValues.$_current.withValue(dependencies) {
-      try isSetting(false) {
-        let result = try operation()
-        if R.self is AnyClass {
-          dependencyObjects.store(result as AnyObject)
-        }
-        return result
+      let result = try operation()
+      if R.self is AnyClass {
+        dependencyObjects.store(result as AnyObject)
       }
+      return result
     }
-  }
+  #endif
 }
 
-#if swift(>=6)
+#if compiler(>=6)
   /// Updates the current dependencies for the duration of an asynchronous operation.
   ///
   /// Any mutations made to ``DependencyValues`` inside `updateValuesForOperation` will be visible
@@ -149,19 +203,31 @@ public func withDependencies<R>(
     _ updateValuesForOperation: (inout DependencyValues) async throws -> Void,
     operation: () async throws -> R
   ) async rethrows -> R {
-    try await isSetting(true) {
+    #if DEBUG
+      try await DependencyValues.$isSetting.withValue(true) {
+        var dependencies = DependencyValues._current
+        try await updateValuesForOperation(&dependencies)
+        return try await DependencyValues.$_current.withValue(dependencies) {
+          try await DependencyValues.$isSetting.withValue(false) {
+            let result = try await operation()
+            if R.self is AnyClass {
+              dependencyObjects.store(result as AnyObject)
+            }
+            return result
+          }
+        }
+      }
+    #else
       var dependencies = DependencyValues._current
       try await updateValuesForOperation(&dependencies)
       return try await DependencyValues.$_current.withValue(dependencies) {
-        try await isSetting(false) {
-          let result = try await operation()
-          if R.self is AnyClass {
-            dependencyObjects.store(result as AnyObject)
-          }
-          return result
+        let result = try await operation()
+        if R.self is AnyClass {
+          dependencyObjects.store(result as AnyObject)
         }
+        return result
       }
-    }
+    #endif
   }
 #endif
 
@@ -248,7 +314,7 @@ public func withDependencies<Model: AnyObject, R>(
   )
 }
 
-#if swift(>=6)
+#if compiler(>=6)
   /// Updates the current dependencies for the duration of an asynchronous operation by taking the
   /// dependencies tied to a given object.
   ///
@@ -546,29 +612,3 @@ private struct DependencyObject: @unchecked Sendable {
     object == nil
   }
 }
-
-@_transparent
-private func isSetting<R>(
-  _ value: Bool,
-  operation: () throws -> R
-) rethrows -> R {
-  #if DEBUG
-    try DependencyValues.$isSetting.withValue(value, operation: operation)
-  #else
-    try operation()
-  #endif
-}
-
-#if swift(<6)
-  @_transparent
-  private func isSetting<R>(
-    _ value: Bool,
-    operation: () async throws -> R
-  ) async rethrows -> R {
-    #if DEBUG
-      try await DependencyValues.$isSetting.withValue(value, operation: operation)
-    #else
-      try await operation()
-    #endif
-  }
-#endif
